@@ -1,0 +1,92 @@
+name: RDP Ubuntu + GNOME
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: ubuntu-latest  # Cambiado a Ubuntu
+    timeout-minutes: 3600
+
+    steps:
+      - name: Install GNOME Desktop and XRDP
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ubuntu-desktop xrdp
+          sudo systemctl enable xrdp
+          sudo systemctl start xrdp
+
+      - name: Configure XRDP for GNOME
+        run: |
+          # Configurar XRDP para usar GNOME
+          echo "gnome-session" > ~/.xsession
+          sudo sed -i '1 a\gnome-session' /etc/xrdp/startwm.sh
+          sudo systemctl restart xrdp
+
+      - name: Create RDP User with Secure Password
+        run: |
+          # Generar contraseña segura
+          PASSWORD=$(openssl rand -base64 32)
+          sudo useradd -m -s /bin/bash RDP
+          echo "RDP:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo RDP  # Añadir a grupo sudo
+          
+          echo "RDP_CREDS=User: RDP | Password: $PASSWORD" >> $GITHUB_ENV
+
+      - name: Install Tailscale
+        run: |
+          # Instalar Tailscale en Ubuntu
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Establish Tailscale Connection
+        run: |
+          # Conectar Tailscale
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$GITHUB_RUN_ID
+          
+          # Esperar IP de Tailscale
+          TS_IP=""
+          RETRIES=0
+          while [[ -z "$TS_IP" && $RETRIES -lt 10 ]]; do
+            TS_IP=$(sudo tailscale ip -4)
+            sleep 5
+            ((RETRIES++))
+          done
+          
+          if [[ -z "$TS_IP" ]]; then
+            echo "Tailscale IP not assigned. Exiting."
+            exit 1
+          fi
+          
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+      - name: Configure Firewall
+        run: |
+          # Permitir RDP en el firewall
+          sudo ufw allow 3389/tcp
+          sudo ufw reload
+
+      - name: Verify RDP Accessibility
+        run: |
+          echo "Tailscale IP: $TAILSCALE_IP"
+          
+          # Verificar puerto 3389
+          if ! nc -zv $TAILSCALE_IP 3389; then
+            echo "TCP connection to RDP port 3389 failed"
+            exit 1
+          fi
+          echo "TCP connectivity successful!"
+
+      - name: Maintain Connection
+        run: |
+          echo ""
+          echo "=== RDP ACCESS ==="
+          echo "Address: $TAILSCALE_IP"
+          echo "$RDP_CREDS"
+          echo "=================="
+          echo ""
+          
+          # Mantener runner activo
+          while true; do
+            echo "[$(date)] RDP Active - Use Ctrl+C in workflow to terminate"
+            sleep 300
+          done
